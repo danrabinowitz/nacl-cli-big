@@ -1,0 +1,137 @@
+#!/bin/bash
+# 
+# Script Name: nacl-cli-big
+#
+# Author: Dan Rabinowitz
+# Date: Apr 8, 2019
+# Version: 0.1
+#
+# Description: Wrap nacl-cli to handle files larger than memory
+# There is a nice tool called nacl-cli by at @eriksank at https://github.com/eriksank/nacl-cli
+# It's great at encrypting and decrypting files using NaCl. But it is limited to files
+# which can fit in memory.
+# This script splits the file into smaller pieces, encryts them, and creates a compressed tar file.
+# It also has a decryption mode which uncompresses, untars, decrypts and concatenates.
+#
+# It is drop-in compatable with nacl-cli.
+#
+# Usage:
+#     cat bigfile | nacl-cli-big enc pubkey=[pubkey] > encrypted.tgz
+#     cat encrypted.tgz | seckey=[seckey] nacl-cli-big dec > bigfile
+#
+
+################################################################################
+# Initial setup
+################################################################################
+# Exit immediately if any command fails.
+set -e
+
+# Print a message to stderr when attempting to expand a variable that is not set. Also, immediately exit.
+set -u
+
+# Cause pipelines to fail on the first command which fails instead of dying later on down the pipeline.
+set -o pipefail
+
+# Print each command to stderr before running it.
+# set -x
+
+################################################################################
+# Parse arguments
+################################################################################
+function usage {
+    cat << USAGE >&2
+Usage:
+    $0 enc pubkey=[key]
+    $0 dec
+USAGE
+  exit 1
+}
+
+while (( "$#" )); do
+  case "$1" in
+    enc)
+      action="enc"
+      shift 1
+      ;;
+    dec)
+      action="dec"
+      shift 1
+      ;;
+    pubkey=*)
+      pubkey="${1#*=}"
+      shift 1
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+################################################################################
+# Validate arguments
+################################################################################
+set +u
+action="$action"
+pubkey="$pubkey"
+set -u
+
+if [ -z "$action" ]; then
+  usage
+fi
+if [ "$action" == "enc" ]; then
+  if [ -z "$pubkey" ]; then
+    usage
+  fi
+fi
+
+################################################################################
+# Function definitions
+################################################################################
+function encode {
+  split -b 10m --filter='nacl-cli enc pubkey='"$pubkey"' > '"$temp_dir"'/nacl-cli-big/parts/$FILE' -
+
+  cat <<EOS > "${temp_dir}/nacl-cli-big/README"
+This directory contains multiple files, which are split from a single input file.
+It was created with nacl-cli-big. To reconstruct the original file, run:
+cat [encrypted_filename.tgz] | seckey=[key] ./nacl-cli-big dec > [decrypted_filename]
+
+nacl-cli-big is available at https://github.com/danrabinowitz/nacl-cli-big
+EOS
+
+  (cd $temp_dir && tar czf - nacl-cli-big)
+}
+
+function decode {
+  (cd $temp_dir && tar xzvf -)
+
+  local FILES=$temp_dir/nacl-cli-big/parts/*
+  local f
+  for f in $FILES
+  do
+    cat "$f" | seckey="$seckey" nacl-cli dec
+  done
+}
+
+function create_tmp_dir {
+  temp_dir=$(mktemp -d)
+  mkdir -p "${temp_dir}/nacl-cli-big/parts"
+}
+
+function clean_up {
+  rm -rf "$temp_dir"
+}
+
+function main {
+  create_tmp_dir
+  if [ "$action" == "enc" ]; then
+    encode
+  else
+    decode
+  fi
+  clean_up
+}
+
+################################################################################
+# main
+################################################################################
+main
